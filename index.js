@@ -4,97 +4,72 @@ const { parseString } = require('xml2js');
 
 const Token = '7021785182:AAEmKmG9qIz1txPDtoyTOGF4VBzHNDq1bDE'; // Replace with your bot token
 const bot = new TelegramBot(Token, {polling: true});
+const sessionKey = "cbd71e38738cc1454373356127b6f23b";
 
-const username = 'KE0QHN'; // Replace with your QRZ username
-const password = 'vpLOFllNR1w9fTqn5Ixq'; // Replace with your QRZ password
-const agent = 'LT.2'; // Replace with your QRZ agent
+let isProcessing = false; // Flag to track if the bot is currently processing a request
+let queue = []; // Queue to store chat IDs of users waiting to interact with the bot
 
-// Function to retrieve session key from QRZ API
-// Function to retrieve session key from QRZ API
-async function getSessionKey(username, password, agent) {
-    try {
-        const response = await axios.get(`https://xmldata.qrz.com/xml/current/?username=${username};password=${password};agent=${agent}`);
-
-        return new Promise((resolve, reject) => {
-            parseString(response.data, (err, result) => {
-                if (err) {
-                    console.error('Error parsing XML:', err);
-                    reject(err);
-                    return;
-                }
-
-                if (result.QRZDatabase.Session[0].Error) {
-                    const errorMessage = result.QRZDatabase.Session[0].Error[0];
-                    console.error('Error from QRZ API:', errorMessage);
-                    reject(errorMessage);
-                    return;
-                }
-
-                const sessionKey = result.QRZDatabase.Session[0].Key[0];
-                resolve(sessionKey);
-            });
-        });
-    } catch (error) {
-        console.error('Error retrieving session key:', error);
-        return null; // Handle error
-    }
-}
-
-async function getInfoByCallsign(sessionKey, callsign) {
-    try {
-        const response = await axios.get(`https://xmldata.qrz.com/xml/current/?s=${sessionKey};callsign=${callsign}`);
-        return response.data; // Return response data
-    } catch (error) {
-        console.error('Error retrieving information:', error);
-        return null; // Handle error
-    }
-}
-
-// Listen for /start command
 // Listen for /start command
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Welcome! Please verify your details.'); // Send a welcome message
-    // Here you can implement your logic to verify user details
+    bot.sendMessage(chatId, 'Welcome! Please Enter Your Callsign To Be Verified!'); // Send a welcome message
 });
 
-// Listen for messages from users
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, 'Please verify your details first.'); // Prompt user to verify details
-    const sessionKey = await getSessionKey(username, password, agent);
-    if (sessionKey) {
-        console.log('Session key:', sessionKey);
-        // Now you can use this session key for subsequent requests
-        const callsign = msg.chat.message; // Replace with the callsign input by the user
-        const info = await getInfoByCallsign(sessionKey, callsign);
-        if (info) {
-            console.log('Information:', info);
-            // Process retrieved information as needed
-        } else {
-            console.log('Failed to retrieve information.');
-            // Handle failed retrieval of information
-        }
+    const text = msg.text;
+
+    if (text.startsWith('/start')) {
+        return; // Ignore /start command in the message handler
+    }
+
+    // Add the user to the queue
+    queue.push(chatId);
+
+    // Process messages only if the bot is not currently processing any request
+    if (!isProcessing) {
+        processQueue(msg); // Pass msg as an argument
     } else {
-        console.log('Failed to retrieve session key.');
-        // Handle failed retrieval of session key
+        bot.sendMessage(chatId, 'You are in the queue. Please wait for your turn.');
     }
 });
 
-// Handle new members joining the group
-bot.on('new_chat_members', async (msg) => {
-    const chatId = msg.chat.id;
-    const newUser = msg.new_chat_members[0];
-    bot.sendMessage(chatId, `Welcome, ${newUser.first_name}!`);
-    // Process next user or perform any other actions
-});
+async function processQueue(msg) { // Receive msg as a parameter
+    const chatId = queue[0];
+    isProcessing = true;
 
-// Handle errors
-bot.on('polling_error', (error) => {
-    console.log(error);  // Log the error
-});
+    try {
+        const text = msg.text;
 
-// Handle errors
-bot.on('webhook_error', (error) => {
-    console.log(error);  // Log the error
-});
+        const response = await axios.get(`https://xmldata.qrz.com/xml/current/?s=${sessionKey}&callsign=${text}`);
+        const xmlData = response.data;
+        parseString(xmlData, (err, result) => {
+            if (err) {
+                throw err;
+            }
+            const responseData = JSON.stringify(result);
+            // Verification logic
+            if (chatId) {
+                // Send invitation message to the verified user
+                bot.sendMessage(chatId, 'Congratulations! You are verified. Click the link to join our group: [Group Name](https://t.me/joinchat/your_group_link)');
+            } else {
+                bot.sendMessage(chatId, 'Sorry, you are not verified.');
+            }
+            isProcessing = false; // Set processing flag to false
+            // After processing, remove the user from the queue and check if there are more users waiting
+            queue.shift();
+            if (queue.length > 0) {
+                processQueue(msg); // Pass msg as an argument
+            }
+        });
+    } catch (error) {
+        console.error('Error processing message:', error);
+        bot.sendMessage(chatId, 'An error occurred while processing your request.'); // Send an error message
+        isProcessing = false; // Set processing flag to false
+        // Handle error and move to the next user in the queue
+        queue.shift();
+        if (queue.length > 0) {
+            processQueue(msg); // Pass msg as an argument
+        }
+    }
+}
